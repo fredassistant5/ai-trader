@@ -1,0 +1,62 @@
+# AI Trader Configuration
+# Do NOT put API keys here — credentials are in ~/.config/alpaca/credentials.json
+
+# --- Risk Manager ---
+risk:
+  daily_loss_pct: 0.02
+  weekly_loss_pct: 0.05
+  max_drawdown_pct: 0.10
+  max_single_position_pct: 0.05
+  max_crypto_exposure_pct: 0.30
+  max_concurrent_positions: 15
+  min_cash_reserve_pct: 0.10
+
+# --- Crypto Mean Reversion ---
+crypto:
+  universe:
+    BTC/USD:
+      vol_mult: 1.0
+      max_pct: 0.10
+    ETH/USD:
+      vol_mult: 1.0
+      max_pct: 0.10
+    SOL/USD:
+      vol_mult: 0.5
+      max_pct: 0.05
+  rsi_period: 7
+  timeframe: "15Min"
+  rsi_entry_long: 25
+  rsi_entry_short: 75
+  rsi_exit_long: 45
+  rsi_exit_short: 55
+  atr_stop_mult: 1.5
+
+# --- Equity Mean Reversion ---
+equity:
+  universe:
+    - SPY
+    - QQQ
+    - AAPL
+    - MSFT
+    - GOOGL
+    - AMZN
+    - NVDA
+    - META
+    - TSLA
+    - AMD
+  timeframe: "5Min"
+  rsi_entry: 20
+  rsi_exit: 50
+  max_position_pct: 0.05
+  atr_stop_mult: 1.5
+
+# --- Main Loop ---
+loop_interval: 60
+
+# --- State Persistence ---
+state:
+  dir: "state"
+  active_trades_file: "active_trades.json"
+
+# --- Default stop loss for orphaned positions (fraction of current price) ---
+orphan_stop_pct: 0.05

@@ -24,25 +24,48 @@ ATR_STOP_MULT = 1.5
 class CryptoMeanReversion:
     """RSI(7) mean reversion on 15-min bars for crypto."""
 
-    def __init__(self, client, market_data, risk_manager):
+    def __init__(self, client, market_data, risk_manager, state_manager=None):
         self.client = client
         self.data = market_data
         self.risk = risk_manager
-        self.active_trades: dict[str, dict] = {}  # symbol -> {side, entry_price, stop_price}
+        self.state_mgr = state_manager
+        self.active_trades: dict[str, dict] = {}
 
-    def run(self) -> list[dict]:
+    def load_state(self, trades: dict):
+        """Load persisted active_trades."""
+        self.active_trades = trades
+
+    def run(self, positions_cache: list = None) -> list[dict]:
         """Evaluate all crypto symbols. Returns list of actions taken."""
         actions = []
         for symbol, params in UNIVERSE.items():
             try:
-                action = self._evaluate(symbol, params)
+                action = self._evaluate(symbol, params, positions_cache)
                 if action:
                     actions.append(action)
             except Exception as e:
                 logger.error(f"Error evaluating {symbol}: {e}")
         return actions
 
-    def _evaluate(self, symbol: str, params: dict) -> Optional[dict]:
+    def _save_state(self):
+        """Persist active_trades after any change."""
+        if self.state_mgr:
+            self.state_mgr.save_active_trades({
+                "crypto": self.active_trades,
+            })
+
+    def _cancel_stop_order(self, symbol: str):
+        """Cancel the server-side stop order for a trade."""
+        trade = self.active_trades.get(symbol, {})
+        stop_id = trade.get("stop_order_id")
+        if stop_id:
+            try:
+                self.client.cancel_order(stop_id)
+                logger.info(f"Cancelled stop order {stop_id} for {symbol}")
+            except Exception as e:
+                logger.warning(f"Failed to cancel stop order {stop_id} for {symbol}: {e}")
+
+    def _evaluate(self, symbol: str, params: dict, positions_cache: list = None) -> Optional[dict]:
         df = self.data.get_bars_with_indicators(symbol, timeframe=TIMEFRAME, limit=50)
         if df is None or len(df) < 20:
             return None
@@ -57,8 +80,8 @@ class CryptoMeanReversion:
 
         sym_clean = symbol.replace("/", "")
 
-        # Check if we have an existing position
-        positions = self.client.get_positions()
+        # Use cached positions if available (H6: reduce API calls)
+        positions = positions_cache if positions_cache is not None else self.client.get_positions()
         pos = next((p for p in positions if p.symbol == sym_clean), None)
 
         # EXIT LOGIC
@@ -66,58 +89,62 @@ class CryptoMeanReversion:
             qty = float(pos.qty)
             side = "long" if qty > 0 else "short"
 
-            # Check stop loss
-            if symbol in self.active_trades:
-                trade = self.active_trades[symbol]
-                stop = trade.get("stop_price")
-                if stop:
-                    if (side == "long" and price <= stop) or (side == "short" and price >= stop):
-                        logger.info(f"STOP HIT {symbol} @ {price:.2f} (stop={stop:.2f})")
-                        self.client.close_position(sym_clean)
-                        del self.active_trades[symbol]
-                        return {"action": "stop_exit", "symbol": symbol, "price": price}
-
-            # RSI exit
+            # Server-side stops handle stop exits — RSI exit still managed here
             if side == "long" and rsi >= RSI_EXIT_LONG:
                 logger.info(f"EXIT LONG {symbol}: RSI={rsi:.1f} >= {RSI_EXIT_LONG}")
-                self.client.close_position(sym_clean)
-                if symbol in self.active_trades:
-                    del self.active_trades[symbol]
+                self._cancel_stop_order(symbol)
+                try:
+                    self.client.close_position(sym_clean)
+                    if symbol in self.active_trades:
+                        del self.active_trades[symbol]
+                    self._save_state()
+                except Exception as e:
+                    logger.error(f"Failed to close {symbol}: {e}")
+                    return None
                 return {"action": "exit_long", "symbol": symbol, "rsi": rsi, "price": price}
 
             if side == "short" and rsi <= RSI_EXIT_SHORT:
                 logger.info(f"EXIT SHORT {symbol}: RSI={rsi:.1f} <= {RSI_EXIT_SHORT}")
-                self.client.close_position(sym_clean)
-                if symbol in self.active_trades:
-                    del self.active_trades[symbol]
+                self._cancel_stop_order(symbol)
+                try:
+                    self.client.close_position(sym_clean)
+                    if symbol in self.active_trades:
+                        del self.active_trades[symbol]
+                    self._save_state()
+                except Exception as e:
+                    logger.error(f"Failed to close {symbol}: {e}")
+                    return None
                 return {"action": "exit_short", "symbol": symbol, "rsi": rsi, "price": price}
 
-            return None  # hold
+            return None  # hold — server-side stop protects us
+
+        # If no position but we have active_trade, stop was hit server-side — clean up
+        if symbol in self.active_trades:
+            logger.info(f"Position gone for {symbol} — server-side stop likely filled. Cleaning up.")
+            del self.active_trades[symbol]
+            self._save_state()
 
         # ENTRY LOGIC — only if no position
         if rsi < RSI_ENTRY_LONG:
             return self._enter(symbol, "buy", price, atr, params)
 
-        # Short entry (if desired — currently enabled)
+        # Short entry (disabled)
         # if rsi > RSI_ENTRY_SHORT:
         #     return self._enter(symbol, "sell", price, atr, params)
 
         return None
 
     def _enter(self, symbol: str, side: str, price: float, atr: float, params: dict) -> Optional[dict]:
-        """Size and submit an entry order."""
+        """Size and submit an entry order with server-side stop loss."""
         try:
             acct = self.client.get_account()
             equity = float(acct.equity)
         except Exception:
             return None
 
-        # Position sizing: volatility-adjusted, capped
         max_notional = params["max_pct"] * equity * params["vol_mult"]
-        # Apply risk manager multiplier
         max_notional *= self.risk.get_size_multiplier()
 
-        # Risk check
         allowed, reason = self.risk.pre_trade_check(symbol, max_notional, side)
         if not allowed:
             logger.info(f"RISK BLOCKED {side} {symbol}: {reason}")
@@ -127,7 +154,6 @@ class CryptoMeanReversion:
         if qty <= 0:
             return None
 
-        # Round qty for crypto
         if "BTC" in symbol:
             qty = round(qty, 5)
         elif "ETH" in symbol:
@@ -138,27 +164,54 @@ class CryptoMeanReversion:
         if qty <= 0:
             return None
 
-        # Stop loss
         stop_price = price - (ATR_STOP_MULT * atr) if side == "buy" else price + (ATR_STOP_MULT * atr)
 
         logger.info(
             f"ENTER {side.upper()} {symbol}: qty={qty}, price={price:.2f}, "
-            f"stop={stop_price:.2f}, notional=${max_notional:.0f}, RSI={self._get_rsi(symbol):.1f}"
+            f"stop={stop_price:.2f}, notional=${max_notional:.0f}"
         )
 
+        # Submit market order first
         try:
             order = self.client.market_order(symbol.replace("/", ""), qty, side)
-            self.active_trades[symbol] = {
-                "side": side,
-                "entry_price": price,
-                "stop_price": stop_price,
-                "qty": qty,
-                "time": datetime.utcnow().isoformat(),
-            }
-            return {"action": f"enter_{side}", "symbol": symbol, "qty": qty, "price": price}
         except Exception as e:
-            logger.error(f"Order failed {side} {symbol}: {e}")
+            logger.error(f"Market order failed {side} {symbol}: {e}")
             return None
+
+        # Market order succeeded — record trade immediately so position is tracked
+        order_id = order.id if hasattr(order, 'id') else str(order)
+        self.active_trades[symbol] = {
+            "side": side,
+            "entry_price": price,
+            "stop_price": stop_price,
+            "qty": qty,
+            "order_id": order_id,
+            "stop_order_id": None,
+            "time": datetime.utcnow().isoformat(),
+        }
+        self._save_state()
+
+        # Now submit server-side stop order separately
+        stop_side = "sell" if side == "buy" else "buy"
+        for attempt in range(3):
+            try:
+                stop_order = self.client.stop_order(
+                    symbol.replace("/", ""), qty, stop_price, side=stop_side
+                )
+                self.active_trades[symbol]["stop_order_id"] = (
+                    stop_order.id if hasattr(stop_order, 'id') else str(stop_order)
+                )
+                self._save_state()
+                break
+            except Exception as e:
+                logger.warning(f"Stop order attempt {attempt+1}/3 failed for {symbol}: {e}")
+                if attempt == 2:
+                    logger.critical(
+                        f"STOP ORDER FAILED for {symbol} after 3 attempts — "
+                        f"position UNPROTECTED. Manual intervention needed."
+                    )
+
+        return {"action": f"enter_{side}", "symbol": symbol, "qty": qty, "price": price}
 
     def _get_rsi(self, symbol: str) -> float:
         df = self.data.get_bars_with_indicators(symbol, timeframe=TIMEFRAME, limit=20)

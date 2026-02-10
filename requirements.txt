@@ -5,3 +5,4 @@ ta
 requests
 websocket-client
 pytz
+pyyaml
