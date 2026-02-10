@@ -1,37 +1,41 @@
-# SYSTEM.md — AI Trader
-
-## Project
-AI Trader — Pure AI-driven stock/crypto trading via Alpaca paper trading.
-
-## Account
-- **Type:** Paper trading
-- **Balance:** ~$96K
-- **Broker:** Alpaca Markets
-
-## Credentials
-- **Location:** `~/.config/alpaca/credentials.json`
-- **Format:** `{"api_key": "...", "secret_key": "...", "base_url": "https://paper-api.alpaca.markets"}`
-- **NEVER in git.** Loaded at runtime only.
+# AI Trader — SYSTEM.md
+**Status:** Phase 1 BUILT — Ready for Code Review  
+**Last Updated:** 2026-02-10  
+**Account:** Alpaca Paper (~$96K)
 
 ## Architecture
+
 ```
 src/
-  core/        — Alpaca client wrapper, order management
-  strategies/  — Trading strategy implementations
-  research/    — Market analysis, signal generation
-  risk/        — Risk management, position sizing
-  data/        — Market data fetching, technical indicators
-scripts/       — Utility scripts (account status, etc.)
-config/        — Config templates (no secrets)
-tests/         — Test files
-logs/          — Runtime logs (gitignored)
+├── core/client.py           # Alpaca API wrapper (market/limit orders, positions, account)
+├── data/market_data.py      # OHLCV bars + indicators (RSI, EMA, BB, VWAP, ADX, ATR, Z-score)
+├── risk/
+│   ├── manager.py           # Central risk gate (daily/weekly/drawdown breakers, position limits)
+│   └── regime.py            # VIX proxy (UVXY) regime detection → size multiplier
+├── strategies/
+│   ├── crypto_mean_reversion.py  # RSI(7) on 15-min BTC/ETH/SOL — 24/7
+│   └── equity_mean_reversion.py  # BB(20,2)+RSI(7)<20 on 5-min large-caps — market hours
+└── main.py                  # Main loop: risk→regime→crypto→equity, 60s intervals
+scripts/
+└── dashboard.py             # Terminal dashboard: equity, P&L, positions, orders
 ```
 
-## Key Design Decisions
-- All credentials loaded from `~/.config/alpaca/credentials.json`
-- Paper trading only until strategies are validated
-- Modular strategy system — each strategy is a separate module
-- Risk management is mandatory before any order execution
+## Risk Controls
+- 2% daily loss → halt trading
+- 5% weekly loss → half size for 3 days
+- 10% max drawdown → kill switch
+- Max 5% per position, 30% crypto, 15 concurrent positions, 10% cash reserve
+- UVXY >5% daily → risk-off (25% position sizes)
 
-## Status
-- **2026-02-10:** Initial project setup, repo created
+## Credentials
+- `~/.config/alpaca/credentials.json` (api_key, secret_key, base_url)
+
+## Running
+```bash
+cd ~/clawd/projects/ai-trader
+source venv/bin/activate
+python -m src.main           # Start trader
+python scripts/dashboard.py  # View account status
+```
+
+## NOT Started — awaiting Code Review before first run.
