@@ -1,0 +1,6 @@
+alpaca-py
+pandas
+numpy
+ta
+requests
+websocket-client

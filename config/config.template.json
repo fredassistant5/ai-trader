@@ -1,0 +1,12 @@
+{
+  "trading": {
+    "max_position_pct": 0.05,
+    "max_portfolio_risk_pct": 0.02,
+    "default_stop_loss_pct": 0.03,
+    "max_open_positions": 10
+  },
+  "data": {
+    "default_timeframe": "1Day",
+    "lookback_days": 90
+  }
+}
