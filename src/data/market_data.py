@@ -94,7 +94,10 @@ class MarketData:
                     limit=limit,
                 )
                 barset = self.crypto_client.get_crypto_bars(request)
-                bars = barset[sym] if sym in barset else list(barset.values())[0] if barset else []
+                try:
+                    bars = barset[sym]
+                except (KeyError, TypeError):
+                    bars = []
             else:
                 request = StockBarsRequest(
                     symbol_or_symbols=symbol,
@@ -103,7 +106,10 @@ class MarketData:
                     limit=limit,
                 )
                 barset = self.stock_client.get_stock_bars(request)
-                bars = barset[symbol] if symbol in barset else list(barset.values())[0] if barset else []
+                try:
+                    bars = barset[symbol]
+                except (KeyError, TypeError):
+                    bars = []
 
             if not bars:
                 logger.warning(f"No bars returned for {symbol} {tf_key}")
