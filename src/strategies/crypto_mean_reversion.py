@@ -35,7 +35,7 @@ class CryptoMeanReversion:
         """Load persisted active_trades."""
         self.active_trades = trades
 
-    def run(self, positions_cache: list = None) -> list[dict]:
+    def run(self, positions_cache: list = None, current_time: datetime = None) -> list[dict]:
         """Evaluate all crypto symbols. Returns list of actions taken."""
         actions = []
         for symbol, params in UNIVERSE.items():

@@ -16,9 +16,18 @@ ATR_STOP_MULT = 1.5
 ET = pytz.timezone("US/Eastern")
 
 
-def is_market_hours() -> bool:
+def is_market_hours(current_time: datetime = None) -> bool:
     """Check if US equity markets are open (9:30-16:00 ET)."""
-    now_et = datetime.now(ET)
+    if current_time is None:
+        now_et = datetime.now(ET)
+    else:
+        # Convert to ET timezone if needed
+        if current_time.tzinfo is None:
+            import pytz
+            now_et = ET.localize(current_time)
+        else:
+            now_et = current_time.astimezone(ET)
+    
     if now_et.weekday() >= 5:
         return False
     market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
@@ -40,9 +49,9 @@ class EquityMeanReversion:
         """Load persisted active_trades."""
         self.active_trades = trades
 
-    def run(self, positions_cache: list = None) -> list[dict]:
+    def run(self, positions_cache: list = None, current_time: datetime = None) -> list[dict]:
         """Evaluate all equity symbols. Only runs during market hours."""
-        if not is_market_hours():
+        if not is_market_hours(current_time):
             return []
 
         actions = []
