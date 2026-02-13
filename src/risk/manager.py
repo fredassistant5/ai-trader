@@ -29,6 +29,7 @@ class RiskState:
         self.kill_switch = False
         self.size_multiplier = 1.0
         self.weekly_loss_until: Optional[datetime] = None
+        self.last_blocked_reasons: dict[str, str] = {}  # symbol -> reason to prevent spam
 
     def reset_daily(self, equity: float):
         self.day_start_equity = equity
@@ -151,7 +152,11 @@ class RiskManager:
             # Max single position size
             if notional > self.MAX_SINGLE_POSITION_PCT * equity:
                 reason = f"position_too_large: ${notional:.0f} > {self.MAX_SINGLE_POSITION_PCT:.0%} of ${equity:.0f}"
-                logger.info(f"BLOCKED {side} {symbol}: {reason}")
+                # Only log if this is a different reason or first time for this symbol
+                last_reason = self.state.last_blocked_reasons.get(symbol)
+                if last_reason != reason:
+                    logger.info(f"BLOCKED {side} {symbol}: {reason}")
+                    self.state.last_blocked_reasons[symbol] = reason
                 return False, reason
 
             # Max concurrent positions
@@ -189,6 +194,10 @@ class RiskManager:
             # C4: Track pending notional for this cycle
             if side == "buy":
                 self._pending_notional += notional
+
+            # Clear any cached block reason since trade is now approved
+            if symbol in self.state.last_blocked_reasons:
+                del self.state.last_blocked_reasons[symbol]
 
             logger.info(f"APPROVED {side} {symbol} ${notional:.2f}")
             return True, "approved"

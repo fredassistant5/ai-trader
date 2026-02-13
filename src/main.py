@@ -180,8 +180,16 @@ class Trader:
         acct = self.client.get_account()
         logger.info(f"Account equity: ${float(acct.equity):,.2f}, cash: ${float(acct.cash):,.2f}")
 
+        loop_count = 0
         while self._running:
             try:
+                loop_count += 1
+                loop_start = time.time()
+                
+                # Add periodic heartbeat log every 10 loops
+                if loop_count % 10 == 0:
+                    logger.info(f"Main loop heartbeat #{loop_count}")
+                
                 self._check_day_week_reset()
 
                 self.risk_manager.refresh()
@@ -215,9 +223,13 @@ class Trader:
                     for a in equity_actions:
                         logger.info(f"EQUITY: {a}")
 
+                loop_duration = time.time() - loop_start
+                if loop_count % 10 == 0:  # Only log duration every 10 loops
+                    logger.info(f"Loop #{loop_count} completed in {loop_duration:.2f}s")
                 time.sleep(LOOP_INTERVAL)
 
             except KeyboardInterrupt:
+                logger.info("Keyboard interrupt received")
                 break
             except Exception as e:
                 logger.error(f"Main loop error: {e}", exc_info=True)

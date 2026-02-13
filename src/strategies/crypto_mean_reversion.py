@@ -38,6 +38,10 @@ class CryptoMeanReversion:
     def run(self, positions_cache: list = None, current_time: datetime = None) -> list[dict]:
         """Evaluate all crypto symbols. Returns list of actions taken."""
         actions = []
+        
+        # First, check software-based stop losses for unprotected positions
+        actions.extend(self._check_software_stops(positions_cache))
+        
         for symbol, params in UNIVERSE.items():
             try:
                 action = self._evaluate(symbol, params, positions_cache)
@@ -53,6 +57,84 @@ class CryptoMeanReversion:
             self.state_mgr.save_active_trades({
                 "crypto": self.active_trades,
             })
+
+    def _check_software_stops(self, positions_cache: list = None) -> list[dict]:
+        """Check unprotected positions and execute software stops when needed."""
+        actions = []
+        positions = positions_cache if positions_cache is not None else self.client.get_positions()
+        
+        for symbol, trade in list(self.active_trades.items()):
+            # Only check positions without server-side stop protection
+            if trade.get("stop_order_id") is not None:
+                continue  # Has server-side stop, skip software monitoring
+                
+            if trade.get("software_stop_failed"):
+                continue  # Already tried software stop and it failed
+                
+            sym_clean = symbol.replace("/", "")
+            pos = next((p for p in positions if p.symbol == sym_clean), None)
+            
+            if pos is None:
+                # Position is gone, cleanup
+                logger.info(f"Software stop monitoring: position gone for {symbol}")
+                if symbol in self.active_trades:
+                    del self.active_trades[symbol]
+                    self._save_state()
+                continue
+                
+            # Get current price
+            try:
+                df = self.data.get_bars_with_indicators(symbol, timeframe=TIMEFRAME, limit=5)
+                if df is None or len(df) == 0:
+                    continue
+                current_price = df.iloc[-1]["close"]
+            except Exception as e:
+                logger.error(f"Failed to get current price for {symbol}: {e}")
+                continue
+                
+            qty = abs(float(pos.qty))
+            side = "long" if float(pos.qty) > 0 else "short"
+            stop_price = trade.get("stop_price")
+            
+            if stop_price is None:
+                continue
+                
+            # Check if stop condition is met
+            stop_triggered = False
+            if side == "long" and current_price <= stop_price:
+                stop_triggered = True
+            elif side == "short" and current_price >= stop_price:
+                stop_triggered = True
+                
+            if stop_triggered:
+                logger.warning(f"SOFTWARE STOP triggered for {symbol}: {side} position, "
+                             f"current=${current_price:.2f} vs stop=${stop_price:.2f}")
+                try:
+                    # Execute market order to close position
+                    stop_side = "sell" if side == "long" else "buy"
+                    self.client.market_order(sym_clean, qty, stop_side)
+                    
+                    # Clean up the trade
+                    del self.active_trades[symbol]
+                    self._save_state()
+                    
+                    actions.append({
+                        "action": "software_stop",
+                        "symbol": symbol,
+                        "side": side,
+                        "price": current_price,
+                        "stop_price": stop_price
+                    })
+                    
+                    logger.info(f"SOFTWARE STOP executed for {symbol}: {stop_side} {qty} @ ${current_price:.2f}")
+                    
+                except Exception as e:
+                    logger.error(f"SOFTWARE STOP failed for {symbol}: {e}")
+                    # Mark as failed so we don't keep trying
+                    trade["software_stop_failed"] = True
+                    self._save_state()
+                    
+        return actions
 
     def _cancel_stop_order(self, symbol: str):
         """Cancel the server-side stop order for a trade."""
